@@ -1,6 +1,10 @@
 package main
 
 import (
+	crand "crypto/rand"
+	"encoding/binary"
+	"fmt"
+	"math/rand"
 	"os"
 
 	"github.com/reusee/lgo"
@@ -9,9 +13,14 @@ import (
 func main() {
 	lua := lgo.NewLua()
 
+	rpcPort := rand.Intn(40000) + 10000
+
 	lua.RegisterFunctions(map[string]interface{}{
 		"Sys_exit": func() {
 			os.Exit(0)
+		},
+		"rpc_port": func() string {
+			return fmt.Sprintf("%d", rpcPort)
 		},
 	})
 
@@ -60,11 +69,21 @@ term:set_cjk_ambiguous_width(2)
 term:spawn_sync(
 	Vte.PtyFlags.DEFAULT,
 	'.',
-	{'/usr/bin/nvim'}, 
+	{
+		'/usr/bin/nvim',
+		[[+ :call serverstart('::1:]] .. rpc_port() .. [[')]],
+		''
+	}, 
 	{},
 	0,
 	function() end,
-	nil)
+	nil,
+	nil,
+	0,
+	nil,
+	nil,
+	nil
+)
 term.on_child_exited = function()
 	Sys_exit()
 end
@@ -80,4 +99,10 @@ window:show_all()
 
 Gtk.main()
 	`)
+}
+
+func init() {
+	var seed int64
+	binary.Read(crand.Reader, binary.LittleEndian, &seed)
+	rand.Seed(seed)
 }
