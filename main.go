@@ -5,11 +5,15 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/rand"
+	"net"
 	"os"
+	"reflect"
+	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/neovim/go-client/nvim"
 	"github.com/reusee/lgo"
+	"github.com/vmihailenco/msgpack"
 )
 
 var (
@@ -113,13 +117,91 @@ func main() {
 }
 
 func startNvimClient(rpcPort int) {
+
 dial:
-	n, err := nvim.Dial(fmt.Sprintf("localhost:%d", rpcPort))
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", rpcPort))
 	if err != nil {
-		time.Sleep(time.Millisecond * 100)
+		time.Sleep(time.Millisecond * 200)
 		goto dial
 	}
-	pt("connected %v\n", n)
+	defer conn.Close()
+
+	var msgID int64
+	type Call struct {
+		Done   chan struct{}
+		Return interface{}
+		Error  interface{}
+	}
+	var calls sync.Map
+	syncCall := func(
+		method string,
+		args ...interface{},
+	) (
+		ret interface{},
+		err error,
+	) {
+		if args == nil {
+			args = make([]interface{}, 0)
+		}
+		id := atomic.AddInt64(&msgID, 1)
+		done := make(chan struct{})
+		call := &Call{
+			Done: done,
+		}
+		calls.Store(id, call)
+		defer calls.Delete(id)
+		if err := msgpack.NewEncoder(conn).Encode([]interface{}{
+			0,
+			id,
+			method,
+			args,
+		}); err != nil {
+			panic(err)
+		}
+		select {
+		case <-done:
+			if call.Error != nil {
+				err = fmt.Errorf("error: %v", call.Error)
+				return
+			}
+			ret = call.Return
+			return
+		case <-time.After(time.Second * 5):
+			err = fmt.Errorf("%s call timeout", method)
+			return
+		}
+		return
+	}
+
+	go func() {
+		for {
+			var data []interface{}
+			if err := msgpack.NewDecoder(conn).Decode(&data); err != nil {
+				return
+			}
+			pt("RECEIVE: %v\n", data)
+			switch data[0].(int8) {
+
+			case 1:
+				id := reflect.ValueOf(data[1]).Int()
+				if v, ok := calls.Load(id); ok {
+					call := v.(*Call)
+					call.Error = data[2]
+					call.Return = data[3]
+					close(call.Done)
+				}
+
+			case 2:
+
+			}
+		}
+	}()
+
+	if _, err := syncCall("nvim_ui_attach", 800, 600, map[string]interface{}{
+		"rgb": true,
+	}); err != nil {
+		panic(err)
+	}
 
 }
 
